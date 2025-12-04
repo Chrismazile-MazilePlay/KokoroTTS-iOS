@@ -6,6 +6,11 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		B71F43752EE17E3F005AB3BE /* iOS-TTS in Frameworks */ = {isa = PBXBuildFile; productRef = B71F43742EE17E3F005AB3BE /* iOS-TTS */; };
+		B71F43782EE17E54005AB3BE /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = B71F43772EE17E54005AB3BE /* ZIPFoundation */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		B707CCA32E20226B0097C27E /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -52,6 +57,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B71F43752EE17E3F005AB3BE /* iOS-TTS in Frameworks */,
+				B71F43782EE17E54005AB3BE /* ZIPFoundation in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -112,6 +119,8 @@
 			);
 			name = Example;
 			packageProductDependencies = (
+				B71F43742EE17E3F005AB3BE /* iOS-TTS */,
+				B71F43772EE17E54005AB3BE /* ZIPFoundation */,
 			);
 			productName = Example;
 			productReference = B707CC902E2022690097C27E /* Example.app */;
@@ -196,6 +205,8 @@
 			mainGroup = B707CC872E2022690097C27E;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				B71F43732EE17E3F005AB3BE /* XCLocalSwiftPackageReference "../../kokoro-tts-ios" */,
+				B71F43762EE17E54005AB3BE /* XCRemoteSwiftPackageReference "ZIPFoundation" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = B707CC912E2022690097C27E /* Products */;
@@ -563,6 +574,35 @@
 		};
 /* End XCConfigurationList section */
 
+/* Begin XCLocalSwiftPackageReference section */
+		B71F43732EE17E3F005AB3BE /* XCLocalSwiftPackageReference "../../kokoro-tts-ios" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = "../../kokoro-tts-ios";
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		B71F43762EE17E54005AB3BE /* XCRemoteSwiftPackageReference "ZIPFoundation" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/weichsel/ZIPFoundation.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.9.20;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		B71F43742EE17E3F005AB3BE /* iOS-TTS */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = "iOS-TTS";
+		};
+		B71F43772EE17E54005AB3BE /* ZIPFoundation */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B71F43762EE17E54005AB3BE /* XCRemoteSwiftPackageReference "ZIPFoundation" */;
+			productName = ZIPFoundation;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = B707CC882E2022690097C27E /* Project object */;
 }

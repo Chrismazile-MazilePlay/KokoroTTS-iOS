@@ -11,16 +11,16 @@ import iOS_TTS
 struct ContentView: View {
     @StateObject private var modelManager = ModelManager()
     @StateObject private var audioPlayer = AudioPlayer()
-    @State private var inputText = "Où êtes-vous? C'est incroyable!"
+    @State private var inputText = "Hello! How are you today?"
     @State private var isGenerating = false
     @State private var generatedAudio: [Float]? = nil
     @State private var performanceReport: String? = nil
     @State private var showPerformanceReport = false
     @State private var showVoiceSettings = false
-    
+
     // Voice settings
-    @State private var selectedLanguage: Language = .french
-    @State private var selectedVoice: VoiceStyle = .ffSiwis
+    @State private var selectedLanguage: Language = .englishUS
+    @State private var selectedVoice: VoiceStyle = .afHeart
     @State private var speechSpeed: Float = 1.0
     
     private var voiceFlag: String {

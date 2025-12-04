@@ -1,0 +1,51 @@
+{
+  "originHash" : "a5825e475402a5f96993452eb04fb7e173f3adb354482d9b491fb770b87aa379",
+  "pins" : [
+    {
+      "identity" : "otosakupostagger-ios",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Otosaku/OtosakuPOSTagger-iOS",
+      "state" : {
+        "revision" : "919f182bbc37a2328e797a75de19e31b2e718908",
+        "version" : "1.0.0"
+      }
+    },
+    {
+      "identity" : "plain-pocketfft",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/dhrebeniuk/plain-pocketfft.git",
+      "state" : {
+        "revision" : "b9633be41ad61e40a93f58abafed9fb5e281ed18",
+        "version" : "0.0.9"
+      }
+    },
+    {
+      "identity" : "pocketfft",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/dhrebeniuk/pocketfft.git",
+      "state" : {
+        "revision" : "f7f2ac6085d9123ab130bb8daebcc11acd72d52c",
+        "version" : "0.0.1"
+      }
+    },
+    {
+      "identity" : "rosakit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/dhrebeniuk/RosaKit.git",
+      "state" : {
+        "revision" : "47aa0f5a2a6cc1fbc6f18f5734fb6fde0bda6215",
+        "version" : "0.0.11"
+      }
+    },
+    {
+      "identity" : "zipfoundation",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/weichsel/ZIPFoundation.git",
+      "state" : {
+        "revision" : "22787ffb59de99e5dc1fbfe80b19c97a904ad48d",
+        "version" : "0.9.20"
+      }
+    }
+  ],
+  "version" : 3
+}
