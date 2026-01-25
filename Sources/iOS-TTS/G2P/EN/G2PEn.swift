@@ -1,7 +1,7 @@
 import Foundation
 import SwiftPOSTagger
 
-/// G2P реализация для английского языка
+/// G2P реализация для английского языка с eSpeak fallback для неизвестных слов
 public class G2PEn: G2P {
     private let isAmericanEnglish: Bool
     private let vocabURL: URL
@@ -9,20 +9,188 @@ public class G2PEn: G2P {
     private let lexicon: Lexicon
     private let unk: String = "❓"
     
+    // MARK: - eSpeak Fallback Support
+    
+    /// Path to espeak-ng-data directory for fallback phonemization
+    private let espeakDataPath: String?
+    
+    /// Whether eSpeak fallback is available and initialized
+    private var espeakAvailable: Bool = false
+    
+    // MARK: - Phoneme Mapping Tables
+    
+    /// Maps eSpeak IPA phonemes to Kokoro's phoneme vocabulary
+    /// Based on Kokoro's en_us_vocab.json and common eSpeak output
+    private static let espeakToKokoroMap: [String: String] = [
+        // Vowels
+        "ɑː": "ɑ",      // PALM vowel
+        "ɑ": "ɑ",
+        "æ": "æ",       // TRAP vowel
+        "ʌ": "ʌ",       // STRUT vowel
+        "ə": "ə",       // schwa
+        "ɜː": "ɜ",      // NURSE vowel
+        "ɜ": "ɜ",
+        "ɛ": "ɛ",       // DRESS vowel
+        "e": "ɛ",       // some eSpeak versions use plain e
+        "ɪ": "ɪ",       // KIT vowel
+        "i": "i",       // FLEECE vowel
+        "iː": "i",
+        "ɔː": "ɔ",      // THOUGHT vowel
+        "ɔ": "ɔ",
+        "ɒ": "ɑ",       // LOT vowel (US uses ɑ)
+        "ʊ": "ʊ",       // FOOT vowel
+        "u": "u",       // GOOSE vowel
+        "uː": "u",
+        
+        // Diphthongs (Kokoro uses uppercase for these)
+        "aɪ": "I",      // PRICE diphthong
+        "aʊ": "W",      // MOUTH diphthong
+        "eɪ": "A",      // FACE diphthong
+        "oʊ": "O",      // GOAT diphthong
+        "əʊ": "O",      // British GOAT
+        "ɔɪ": "Y",      // CHOICE diphthong
+        "ɪə": "ɪɹ",     // NEAR
+        "ʊə": "ʊɹ",     // CURE
+        "eə": "ɛɹ",     // SQUARE
+        
+        // Consonants
+        "b": "b",
+        "d": "d",
+        "f": "f",
+        "ɡ": "ɡ",
+        "g": "ɡ",       // some systems use plain g
+        "h": "h",
+        "j": "j",       // YES consonant
+        "k": "k",
+        "l": "l",
+        "m": "m",
+        "n": "n",
+        "ŋ": "ŋ",       // SING consonant
+        "p": "p",
+        "ɹ": "ɹ",       // American R
+        "r": "ɹ",       // eSpeak sometimes uses plain r
+        "s": "s",
+        "t": "t",
+        "v": "v",
+        "w": "w",
+        "z": "z",
+        "ð": "ð",       // THIS consonant
+        "θ": "θ",       // THINK consonant
+        "ʃ": "ʃ",       // SHIP consonant
+        "ʒ": "ʒ",       // MEASURE consonant
+        "tʃ": "ʧ",      // CHIP affricate
+        "dʒ": "ʤ",      // JUDGE affricate
+        "ʔ": "ʔ",       // glottal stop
+        "ɾ": "ɾ",       // flap T
+        
+        // Stress markers
+        "ˈ": "ˈ",       // primary stress
+        "ˌ": "ˌ",       // secondary stress
+        
+        // Syllabic consonants
+        "l̩": "ᵊl",     // syllabic L
+        "n̩": "ᵊn",     // syllabic N
+        "m̩": "ᵊm",     // syllabic M
+        
+        // R-colored vowels (American English)
+        "ɚ": "ɜ",       // unstressed schwa+r
+        "ɝ": "ɜ",       // stressed schwa+r
+        "ɑɹ": "ɑɹ",     // START
+        "ɔɹ": "ɔɹ",     // NORTH/FORCE
+        "ɛɹ": "ɛɹ",     // SQUARE
+        "ɪɹ": "ɪɹ",     // NEAR
+        "ʊɹ": "ʊɹ",     // CURE
+    ]
+    
+    /// Characters to remove from eSpeak output (length markers, etc.)
+    private static let espeakRemoveChars = Set<Character>(["ː", "ˑ", "̩", "̃", "̪", "̺", "̻"])
+    
+    // MARK: - Initialization
+    
     /// Инициализация G2P для английского языка
     /// - Parameters:
     ///   - british: false для американского английского, true для британского
     ///   - vocabURL: URL папки с vocab файлами (us_gold.json, us_silver.json, gb_gold.json, gb_silver.json)
     ///   - postaggerModelURL: URL папки с моделью SwiftPOSTagger (содержит Model.mlmodelc, vocab.txt, outTokens.txt)
-    public init(british: Bool, vocabURL: URL, postaggerModelURL: URL) throws {
+    ///   - espeakDataPath: Optional path to espeak-ng-data directory for OOV fallback
+    public init(british: Bool, vocabURL: URL, postaggerModelURL: URL, espeakDataPath: String? = nil) throws {
         self.isAmericanEnglish = !british
         self.vocabURL = vocabURL
+        self.espeakDataPath = espeakDataPath
         
         // Инициализируем POS tagger
         self.postagger = try SwiftPOSTagger(modelDirectoryURL: postaggerModelURL)
         
         // Инициализируем Lexicon
         self.lexicon = try Lexicon(british: british, vocabURL: vocabURL)
+        
+        // Initialize eSpeak if path provided
+        if let path = espeakDataPath {
+            self.espeakAvailable = EspeakSwiftWrapper.initialize(withDataPath: path)
+            if espeakAvailable {
+                print("✅ G2PEn: eSpeak fallback initialized successfully")
+            } else {
+                print("⚠️ G2PEn: eSpeak fallback initialization failed")
+            }
+        }
+    }
+    
+    // MARK: - eSpeak Fallback Methods
+    
+    /// Attempts to get phonemes for a word using eSpeak as fallback
+    /// - Parameter word: The word to phonemize
+    /// - Returns: Kokoro-compatible phoneme string, or nil if fallback unavailable/failed
+    private func espeakFallback(_ word: String) -> String? {
+        guard espeakAvailable, let dataPath = espeakDataPath else {
+            return nil
+        }
+        
+        // Clean the word - remove any non-letter characters for phonemization
+        let cleanWord = word.filter { $0.isLetter }
+        guard !cleanWord.isEmpty else { return nil }
+        
+        // Get language code based on variant
+        let langCode = isAmericanEnglish ? "en-us" : "en-gb"
+        
+        // Call eSpeak
+        guard let espeakPhonemes = EspeakSwiftWrapper.textToPhonemes(cleanWord, language: langCode, dataPath: dataPath) else {
+            print("⚠️ G2PEn.espeakFallback: eSpeak returned nil for '\(cleanWord)'")
+            return nil
+        }
+        
+        print("🔄 G2PEn.espeakFallback: eSpeak phonemes for '\(cleanWord)': '\(espeakPhonemes)'")
+        
+        // Convert eSpeak phonemes to Kokoro format
+        let kokoroPhonemes = mapEspeakToKokoro(espeakPhonemes)
+        
+        print("✅ G2PEn.espeakFallback: Mapped to Kokoro: '\(kokoroPhonemes)'")
+        
+        return kokoroPhonemes.isEmpty ? nil : kokoroPhonemes
+    }
+    
+    /// Maps eSpeak IPA phonemes to Kokoro's phoneme vocabulary
+    /// - Parameter espeakPhonemes: Raw phoneme string from eSpeak
+    /// - Returns: Kokoro-compatible phoneme string
+    private func mapEspeakToKokoro(_ espeakPhonemes: String) -> String {
+        var result = espeakPhonemes
+        
+        // First, handle multi-character mappings (diphthongs and affricates)
+        // Sort by length descending to handle longer sequences first
+        let sortedMappings = G2PEn.espeakToKokoroMap.sorted { $0.key.count > $1.key.count }
+        
+        for (espeak, kokoro) in sortedMappings {
+            result = result.replacingOccurrences(of: espeak, with: kokoro)
+        }
+        
+        // Remove any characters that shouldn't be in the output
+        result = String(result.filter { !G2PEn.espeakRemoveChars.contains($0) })
+        
+        // Clean up any double spaces
+        while result.contains("  ") {
+            result = result.replacingOccurrences(of: "  ", with: " ")
+        }
+        
+        return result.trimmingCharacters(in: .whitespaces)
     }
     
     // MARK: - G2P Protocol Implementation
@@ -58,6 +226,15 @@ public class G2PEn: G2P {
                     let (phonemes, rating) = lexicon.processToken(singleToken, context: context)
                     singleToken.phonemes = phonemes
                     singleToken.rating = rating
+                    
+                    // *** NEW: eSpeak fallback for single tokens ***
+                    if singleToken.phonemes == nil {
+                        if let fallbackPhonemes = espeakFallback(singleToken.text) {
+                            singleToken.phonemes = fallbackPhonemes
+                            singleToken.rating = 2  // Lower rating for fallback
+                            print("🔄 G2PEn: Used eSpeak fallback for single token '\(singleToken.text)' -> '\(fallbackPhonemes)'")
+                        }
+                    }
                 }
                 context = tokenContext(context: context, phonemes: singleToken.phonemes, token: singleToken)
             } else if let tokenGroup = word as? [MToken] {
@@ -558,11 +735,12 @@ public class G2PEn: G2P {
         return TokenContext(futureVowel: vowel, futureTo: futureTo)
     }
     
-    /// Обработка группы токенов (сложная логика из Python)
+    /// Обработка группы токенов (сложная логика из Python) - WITH ESPEAK FALLBACK
     private func processTokenGroup(_ tokenGroup: [MToken], context: inout TokenContext) {
         var left = 0
         var right = tokenGroup.count
         var shouldFallback = false
+        var fallbackWord: String? = nil
         
         while left < right {
             // Проверяем есть ли уже фонемы или алиасы
@@ -610,8 +788,10 @@ public class G2PEn: G2P {
                         currentToken.phonemes = ""
                         currentToken.underscore.rating = 3
                     } else {
-                        // Нужен fallback, но у нас его нет - просто оставляем nil
+                        // *** CHANGED: Store word for fallback instead of giving up immediately ***
                         shouldFallback = true
+                        // Reconstruct the full word from all tokens in the group
+                        fallbackWord = tokenGroup.map { $0.text }.joined()
                         break
                     }
                 }
@@ -620,14 +800,33 @@ public class G2PEn: G2P {
         }
         
         if shouldFallback {
-            // В Python здесь используется fallback, но у нас его нет
-            // Просто объединяем все токены и оставляем как есть
-            _ = mergeTokens(tokenGroup, unk: nil)
-            tokenGroup[0].phonemes = nil  // Оставляем nil, чтобы потом заменить на unk
-            tokenGroup[0].underscore.rating = 1
-            for i in 1..<tokenGroup.count {
-                tokenGroup[i].phonemes = ""
-                tokenGroup[i].rating = 1
+            // *** NEW: Try eSpeak fallback for the entire token group ***
+            let wordToFallback = fallbackWord ?? tokenGroup.map { $0.text }.joined()
+            
+            if let fallbackPhonemes = espeakFallback(wordToFallback) {
+                // Successfully got phonemes from eSpeak!
+                tokenGroup[0].phonemes = fallbackPhonemes
+                tokenGroup[0].underscore.rating = 2  // Lower rating for fallback
+                
+                // Clear remaining tokens in group
+                for i in 1..<tokenGroup.count {
+                    tokenGroup[i].phonemes = ""
+                    tokenGroup[i].rating = 2
+                }
+                
+                print("🔄 G2PEn: Used eSpeak fallback for token group '\(wordToFallback)' -> '\(fallbackPhonemes)'")
+                
+                // Update context
+                context = tokenContext(context: context, phonemes: fallbackPhonemes, token: tokenGroup[0])
+            } else {
+                // eSpeak fallback also failed - leave as unknown
+                tokenGroup[0].phonemes = nil  // Will become ❓
+                tokenGroup[0].underscore.rating = 1
+                for i in 1..<tokenGroup.count {
+                    tokenGroup[i].phonemes = ""
+                    tokenGroup[i].rating = 1
+                }
+                print("⚠️ G2PEn: No fallback available for '\(wordToFallback)', marking as unknown")
             }
         } else {
             // Resolve tokens logic из Python

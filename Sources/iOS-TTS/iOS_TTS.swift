@@ -247,9 +247,9 @@ public class TTSPipeline {
         // Создаем G2P для указанного языка
         switch language {
         case .englishUS:
-            self.g2p = try G2PEn(british: false, vocabURL: vocabURL, postaggerModelURL: postaggerModelURL)
+            self.g2p = try G2PEn(british: false, vocabURL: vocabURL, postaggerModelURL: postaggerModelURL, espeakDataPath: espeakDataPath)
         case .englishGB:
-            self.g2p = try G2PEn(british: true, vocabURL: vocabURL, postaggerModelURL: postaggerModelURL)
+            self.g2p = try G2PEn(british: true, vocabURL: vocabURL, postaggerModelURL: postaggerModelURL, espeakDataPath: espeakDataPath)
         case .french, .spanish, .italian, .portuguese, .hindi:
             self.g2p = try G2PSimple(language: language, espeakDataPath: espeakDataPath)
         case .japanese:
