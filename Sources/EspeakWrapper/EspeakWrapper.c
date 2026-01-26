@@ -3,11 +3,50 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <TargetConditionals.h>
 
-// Include espeak headers using header search path from Package.swift
+// Only include espeak headers on real device (not simulator)
+#if !TARGET_OS_SIMULATOR
 #include <espeak-ng/speak_lib.h>
+#endif
 
 static int is_initialized = 0;
+
+// =============================================================================
+// MARK: - Simulator Stubs
+// =============================================================================
+
+#if TARGET_OS_SIMULATOR
+
+// Stub implementations for iOS Simulator
+// The espeak-ng xcframework doesn't include simulator architectures,
+// so we provide no-op stubs that gracefully fail.
+
+int espeak_wrapper_initialize_with_bundle(void) {
+    // Always return failure on simulator - eSpeak not available
+    return 0;
+}
+
+int espeak_wrapper_initialize_with_path(const char* data_path) {
+    // Always return failure on simulator - eSpeak not available
+    (void)data_path;  // Silence unused parameter warning
+    return 0;
+}
+
+EspeakResult espeak_wrapper_text_to_phonemes(const char* text, const char* language) {
+    // Return empty result on simulator - eSpeak not available
+    (void)text;      // Silence unused parameter warning
+    (void)language;  // Silence unused parameter warning
+    
+    EspeakResult result = {0, NULL};
+    return result;
+}
+
+#else
+
+// =============================================================================
+// MARK: - Real Device Implementation
+// =============================================================================
 
 int espeak_wrapper_initialize_with_bundle(void) {
     if (is_initialized) {
@@ -94,11 +133,11 @@ EspeakResult espeak_wrapper_text_to_phonemes(const char* text, const char* langu
     
     // phonemes_mode options:
     // 0 = PhonemeOnly (just phonemes)
-    // 1 = PhonemeTies (include ties U+0361) 
+    // 1 = PhonemeTies (include ties U+0361)
     // 2 = PhonemeZWJ (include zero-width joiners)
     // 3 = PhonemeUnderscore (separate with underscores)
     
-    // Back to mode 2 (PhonemeZWJ) which gave us proper IPA 
+    // Back to mode 2 (PhonemeZWJ) which gave us proper IPA
     int phonemes_mode = 2;  // PhonemeZWJ for IPA symbols
     const char* phonemes = espeak_TextToPhonemes(&text_ptr, text_mode, phonemes_mode);
     
@@ -117,3 +156,5 @@ EspeakResult espeak_wrapper_text_to_phonemes(const char* text, const char* langu
     
     return result;
 }
+
+#endif // TARGET_OS_SIMULATOR
