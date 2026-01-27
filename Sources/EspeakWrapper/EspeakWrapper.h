@@ -29,13 +29,20 @@ typedef struct {
 } EspeakResult;
 
 // High-level wrapper function for text to phonemes conversion
+// Thread-safe: uses internal mutex to serialize eSpeak calls
 EspeakResult espeak_wrapper_text_to_phonemes(const char* text, const char* language);
 
 // Initialize espeak with bundle resources path
+// Thread-safe: can be called from any thread
 int espeak_wrapper_initialize_with_bundle(void);
 
 // Initialize espeak with specific data path
+// Thread-safe: can be called from any thread
 int espeak_wrapper_initialize_with_path(const char* data_path);
+
+// Cleanup espeak resources (optional - resources released on process exit)
+// Thread-safe: can be called from any thread
+void espeak_wrapper_cleanup(void);
 
 #ifdef __cplusplus
 }
