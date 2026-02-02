@@ -56,281 +56,452 @@ public class TTSModel {
         self.generator = try Generator(modelPath: modelPath, configuration: configuration)
     }
     
-    func infer(inputIds: [Int], refS: [Float], speed: Float) throws -> [Float] {
+    // MARK: - Main Inference
+    
+    /// Performs TTS inference with optional pitch modifications.
+    ///
+    /// - Parameters:
+    ///   - inputIds: Phoneme token IDs from G2P conversion
+    ///   - refS: Style vector (256 elements: 128 refAudio + 128 style)
+    ///   - speed: Speech rate multiplier (0.5-2.0)
+    ///   - pitchShiftSemitones: Pitch shift in semitones (-12 to +12)
+    ///   - pitchRangeScale: Expressiveness scale (0.5-1.5)
+    /// - Returns: Audio samples as Float array
+    func infer(
+        inputIds: [Int],
+        refS: [Float],
+        speed: Float,
+        pitchShiftSemitones: Float = 0.0,
+        pitchRangeScale: Float = 1.0
+    ) throws -> [Float] {
         let monitor = PerformanceMonitor.shared
         
         return try monitor.measure(PerformanceMonitor.Module.total) {
             // Batch size is always 1
             let seqLen = inputIds.count
         
-        // Create attention mask (all 1s since we have real tokens, no padding)
-        let attentionMask = Array(repeating: 1, count: seqLen)
-        
-        // Create text mask for other models (0s for real tokens, 1s for padding)
-        // Since we have no padding, all values are 0
-        let textMask = Array(repeating: Float(0), count: seqLen)
-        
-        // Prepare BERT inputs
-        let inputIdsArray = try MLMultiArray(shape: [1, NSNumber(value: seqLen)], dataType: .float32)
-        let attentionMaskArray = try MLMultiArray(shape: [1, NSNumber(value: seqLen)], dataType: .float32)
-        
-        // Convert input_ids to Float16
-        for i in 0..<seqLen {
-            inputIdsArray[[0, i as NSNumber]] = NSNumber(value: Float(inputIds[i]))
-            attentionMaskArray[[0, i as NSNumber]] = NSNumber(value: Float(attentionMask[i]))
-        }
-        
-        // Call BERT model
-        let bertInput = try MLDictionaryFeatureProvider(dictionary: [
-            "input_ids": MLFeatureValue(multiArray: inputIdsArray),
-            "attention_mask": MLFeatureValue(multiArray: attentionMaskArray)
-        ])
-        
-        print("🔍 BERT input_ids shape: \(inputIdsArray.shape), total elements: \(inputIdsArray.count)")
-        print("🔍 BERT attention_mask shape: \(attentionMaskArray.shape)")
-        
-        let bertOutput = try monitor.measure(PerformanceMonitor.Module.bert) {
-            do {
-                print("▶️ Calling BERT model...")
-                let output = try bert.prediction(from: bertInput)
-                print("✅ BERT model completed successfully")
-                return output
-            } catch {
-                print("❌ BERT model failed: \(error)")
-                throw error
+            // Create attention mask (all 1s since we have real tokens, no padding)
+            let attentionMask = Array(repeating: 1, count: seqLen)
+            
+            // Create text mask for other models (0s for real tokens, 1s for padding)
+            // Since we have no padding, all values are 0
+            let textMask = Array(repeating: Float(0), count: seqLen)
+            
+            // Prepare BERT inputs
+            let inputIdsArray = try MLMultiArray(shape: [1, NSNumber(value: seqLen)], dataType: .float32)
+            let attentionMaskArray = try MLMultiArray(shape: [1, NSNumber(value: seqLen)], dataType: .float32)
+            
+            // Convert input_ids to Float16
+            for i in 0..<seqLen {
+                inputIdsArray[[0, i as NSNumber]] = NSNumber(value: Float(inputIds[i]))
+                attentionMaskArray[[0, i as NSNumber]] = NSNumber(value: Float(attentionMask[i]))
             }
-        }
-        guard let lastHiddenState = bertOutput.featureValue(for: "last_hidden_state")?.multiArrayValue else {
-            throw NSError(domain: "TTSModel", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to get BERT output"])
-        }
-        
-        // Call BERT encoder
-        let bertEncoderInput = try MLDictionaryFeatureProvider(dictionary: [
-            "bert_dur": MLFeatureValue(multiArray: lastHiddenState)
-        ])
-        
-        print("🔍 BERT Encoder bert_dur shape: \(lastHiddenState.shape), total elements: \(lastHiddenState.count)")
-        
-        let bertEncoderOutput = try monitor.measure(PerformanceMonitor.Module.bertEncoder) {
-            do {
-                print("▶️ Calling BERT Encoder model...")
-                let output = try bertEncoder.prediction(from: bertEncoderInput)
-                print("✅ BERT Encoder model completed successfully")
-                return output
-            } catch {
-                print("❌ BERT Encoder model failed: \(error)")
-                throw error
+            
+            // Call BERT model
+            let bertInput = try MLDictionaryFeatureProvider(dictionary: [
+                "input_ids": MLFeatureValue(multiArray: inputIdsArray),
+                "attention_mask": MLFeatureValue(multiArray: attentionMaskArray)
+            ])
+            
+            #if DEBUG
+            print("BERT input_ids shape: \(inputIdsArray.shape), total elements: \(inputIdsArray.count)")
+            print("BERT attention_mask shape: \(attentionMaskArray.shape)")
+            #endif
+            
+            let bertOutput = try monitor.measure(PerformanceMonitor.Module.bert) {
+                do {
+                    #if DEBUG
+                    print("Calling BERT model...")
+                    #endif
+                    let output = try bert.prediction(from: bertInput)
+                    #if DEBUG
+                    print("BERT model completed successfully")
+                    #endif
+                    return output
+                } catch {
+                    print("BERT model failed: \(error)")
+                    throw error
+                }
             }
-        }
-        guard let dEnRaw = bertEncoderOutput.featureValue(for: "d_en")?.multiArrayValue else {
-            throw NSError(domain: "TTSModel", code: 2, userInfo: [NSLocalizedDescriptionKey: "Failed to get BERT encoder output"])
-        }
-        
-        // In Python: d_en = self.bert_encoder(bert_dur).transpose(-1, -2)
-        // Transpose last two dimensions
-        let dEn = try transposeLastTwoDimensions(dEnRaw)
-        
-        // Split style vector
-        let (refAudio, style) = splitStyleVector(refS)
-        
-        // Prepare text mask for prosody predictor
-        let textMaskArray = try MLMultiArray(shape: [1, NSNumber(value: seqLen)], dataType: .float32)
-        for i in 0..<seqLen {
-            textMaskArray[[0, i as NSNumber]] = NSNumber(value: textMask[i])
-        }
-        
-        // Prepare style array
-        let styleArray = try MLMultiArray(shape: [1, 128], dataType: .float32)
-        for i in 0..<128 {
-            styleArray[[0, i as NSNumber]] = NSNumber(value: style[i])
-        }
-        
-        // Call Duration Encoder (without speed)
-        let durationInput = try MLDictionaryFeatureProvider(dictionary: [
-            "text": MLFeatureValue(multiArray: dEn),
-            "style": MLFeatureValue(multiArray: styleArray),
-            "mask": MLFeatureValue(multiArray: textMaskArray),
-        ])
-        
-        print("🔍 Duration Encoder text shape: \(dEn.shape), total elements: \(dEn.count)")
-        print("🔍 Duration Encoder style shape: \(styleArray.shape)")
-        print("🔍 Duration Encoder mask shape: \(textMaskArray.shape)")
-        
-        let durationOutput = try monitor.measure(PerformanceMonitor.Module.durationEncoder) {
-            do {
-                print("▶️ Calling Duration Encoder model...")
-                let output = try durationEncoder.prediction(from: durationInput)
-                print("✅ Duration Encoder model completed successfully")
-                return output
-            } catch {
-                print("❌ Duration Encoder model failed: \(error)")
-                throw error
+            guard let lastHiddenState = bertOutput.featureValue(for: "last_hidden_state")?.multiArrayValue else {
+                throw NSError(domain: "TTSModel", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to get BERT output"])
             }
-        }
-        guard let d = durationOutput.featureValue(for: "d")?.multiArrayValue else {
-            throw NSError(domain: "TTSModel", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to get duration predictor output"])
-        }
-        
-        
-        // Prepare speed array (tensor of size (1,))
-        let speedArray = try MLMultiArray(shape: [1], dataType: .float32)
-        speedArray[[0]] = NSNumber(value: speed)
-        
-        let prosodyInput = try MLDictionaryFeatureProvider(dictionary: [
-            "d": MLFeatureValue(multiArray: d),
-            "speed": MLFeatureValue(multiArray: speedArray)
-        ])
-        
-        print("🔍 Prosody Predictor d shape: \(d.shape), total elements: \(d.count)")
-        print("🔍 Prosody Predictor speed shape: \(speedArray.shape), value: \(speed)")
-        
-        let prosodyOutput = try monitor.measure(PerformanceMonitor.Module.prosodyPredictor) {
-            do {
-                print("▶️ Calling Prosody Predictor model...")
-                let output = try prosodyPredictor.prediction(from: prosodyInput)
-                print("✅ Prosody Predictor model completed successfully")
-                return output
-            } catch {
-                print("❌ Prosody Predictor model failed: \(error)")
-                throw error
+            
+            // Call BERT encoder
+            let bertEncoderInput = try MLDictionaryFeatureProvider(dictionary: [
+                "bert_dur": MLFeatureValue(multiArray: lastHiddenState)
+            ])
+            
+            #if DEBUG
+            print("BERT Encoder bert_dur shape: \(lastHiddenState.shape), total elements: \(lastHiddenState.count)")
+            #endif
+            
+            let bertEncoderOutput = try monitor.measure(PerformanceMonitor.Module.bertEncoder) {
+                do {
+                    #if DEBUG
+                    print("Calling BERT Encoder model...")
+                    #endif
+                    let output = try bertEncoder.prediction(from: bertEncoderInput)
+                    #if DEBUG
+                    print("BERT Encoder model completed successfully")
+                    #endif
+                    return output
+                } catch {
+                    print("BERT Encoder model failed: \(error)")
+                    throw error
+                }
             }
-        }
-        
-        guard let predDur = prosodyOutput.featureValue(for: "pred_dur")?.multiArrayValue else {
-            throw NSError(domain: "TTSModel", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to get prosody predictor output"])
-        }
-        
-        
-        
-        // Create alignment indices
-        let (_, alignmentMatrix, en) = try monitor.measure(PerformanceMonitor.Module.alignment) {
-            print("🔍 Creating alignment with predDur shape: \(predDur.shape), seqLen: \(seqLen)")
-            let indices = try createAlignmentIndices(predDur: predDur, seqLen: seqLen)
-            print("🔍 Alignment indices count: \(indices.count)")
-            let alignmentMatrix = try createAlignmentMatrix(indices: indices, seqLen: seqLen)
-            print("🔍 Alignment matrix shape: \(alignmentMatrix.shape), total elements: \(alignmentMatrix.count)")
-            let en = try applyAlignment(d: d, alignmentMatrix: alignmentMatrix)
-            print("🔍 Final alignment result shape: \(en.shape), total elements: \(en.count)")
-            return (indices, alignmentMatrix, en)
-        }
-        
-        // Call F0 Predictor
-        let f0Input = try MLDictionaryFeatureProvider(dictionary: [
-            "x": MLFeatureValue(multiArray: en),
-            "s": MLFeatureValue(multiArray: styleArray),
-        ])
-        
-        print("🔍 F0 Predictor x shape: \(en.shape), total elements: \(en.count)")
-        print("🔍 F0 Predictor s shape: \(styleArray.shape)")
-        
-        let f0Output = try monitor.measure(PerformanceMonitor.Module.f0Predictor) {
-            do {
-                print("▶️ Calling F0 Predictor model...")
-                let output = try f0Predictor.prediction(from: f0Input)
-                print("✅ F0 Predictor model completed successfully")
-                return output
-            } catch {
-                print("❌ F0 Predictor model failed: \(error)")
-                throw error
+            guard let dEnRaw = bertEncoderOutput.featureValue(for: "d_en")?.multiArrayValue else {
+                throw NSError(domain: "TTSModel", code: 2, userInfo: [NSLocalizedDescriptionKey: "Failed to get BERT encoder output"])
             }
-        }
-        guard let f0Pred = f0Output.featureValue(for: "F0_pred")?.multiArrayValue,
-              let nPred = f0Output.featureValue(for: "N_pred")?.multiArrayValue else {
-            throw NSError(domain: "TTSModel", code: 4, userInfo: [NSLocalizedDescriptionKey: "Failed to get F0 predictor output"])
-        }
-        
-        
-        // Call Text Encoder
-        let textEncoderInput = try MLDictionaryFeatureProvider(dictionary: [
-            "x": MLFeatureValue(multiArray: inputIdsArray),
-            "m": MLFeatureValue(multiArray: textMaskArray),
-        ])
-        
-        print("🔍 Text Encoder x shape: \(inputIdsArray.shape), total elements: \(inputIdsArray.count)")
-        print("🔍 Text Encoder m shape: \(textMaskArray.shape)")
-        
-        let textEncoderOutput = try monitor.measure(PerformanceMonitor.Module.textEncoder) {
-            do {
-                print("▶️ Calling Text Encoder model...")
-                let output = try textEncoder.prediction(from: textEncoderInput)
-                print("✅ Text Encoder model completed successfully")
-                return output
-            } catch {
-                print("❌ Text Encoder model failed: \(error)")
-                throw error
+            
+            // In Python: d_en = self.bert_encoder(bert_dur).transpose(-1, -2)
+            // Transpose last two dimensions
+            let dEn = try transposeLastTwoDimensions(dEnRaw)
+            
+            // Split style vector
+            let (refAudio, style) = splitStyleVector(refS)
+            
+            // Prepare text mask for prosody predictor
+            let textMaskArray = try MLMultiArray(shape: [1, NSNumber(value: seqLen)], dataType: .float32)
+            for i in 0..<seqLen {
+                textMaskArray[[0, i as NSNumber]] = NSNumber(value: textMask[i])
             }
-        }
-        guard let tEn = textEncoderOutput.featureValue(for: "t_en")?.multiArrayValue else {
-            throw NSError(domain: "TTSModel", code: 5, userInfo: [NSLocalizedDescriptionKey: "Failed to get text encoder output"])
-        }
-        
-        // Apply alignment to text encoder output
-        // In Python: asr = t_en @ pred_aln_trg (no transpose needed)
-        print("🔍 Applying direct alignment to text encoder output")
-        print("🔍 Text encoder output shape: \(tEn.shape), total elements: \(tEn.count)")
-        let asr = try applyAlignmentDirect(input: tEn, alignmentMatrix: alignmentMatrix)
-        print("🔍 ASR result shape: \(asr.shape), total elements: \(asr.count)")
-        
-        // Prepare reference audio array
-        let refAudioArray = try MLMultiArray(shape: [1, 128], dataType: .float32)
-        for i in 0..<128 {
-            refAudioArray[[0, i as NSNumber]] = NSNumber(value: refAudio[i])
-        }
-        
-        // Call Decoder
-        let decoderInput = try MLDictionaryFeatureProvider(dictionary: [
-            "asr": MLFeatureValue(multiArray: asr),
-            "F0_curve": MLFeatureValue(multiArray: f0Pred),
-            "N": MLFeatureValue(multiArray: nPred),
-            "s": MLFeatureValue(multiArray: refAudioArray)
-        ])
-        
-        print("🔍 Decoder asr shape: \(asr.shape), total elements: \(asr.count)")
-        print("🔍 Decoder F0_curve shape: \(f0Pred.shape), total elements: \(f0Pred.count)")
-        print("🔍 Decoder N shape: \(nPred.shape), total elements: \(nPred.count)")
-        print("🔍 Decoder s shape: \(refAudioArray.shape)")
-        
-        let decoderOutput = try monitor.measure(PerformanceMonitor.Module.decoder) {
-            do {
-                print("▶️ Calling Decoder model...")
-                let output = try decoder.prediction(from: decoderInput)
-                print("✅ Decoder model completed successfully")
-                return output
-            } catch {
-                print("❌ Decoder model failed: \(error)")
-                throw error
+            
+            // Prepare style array
+            let styleArray = try MLMultiArray(shape: [1, 128], dataType: .float32)
+            for i in 0..<128 {
+                styleArray[[0, i as NSNumber]] = NSNumber(value: style[i])
             }
-        }
-        guard let x = decoderOutput.featureValue(for: "x")?.multiArrayValue,
-              let _ = decoderOutput.featureValue(for: "s")?.multiArrayValue,
-              let _ = decoderOutput.featureValue(for: "F0_curve")?.multiArrayValue else {
-            throw NSError(domain: "TTSModel", code: 6, userInfo: [NSLocalizedDescriptionKey: "Failed to get decoder output"])
-        }
-        
-        
-        let s = refAudioArray
-        let F0_curve = f0Pred
+            
+            // Call Duration Encoder (without speed)
+            let durationInput = try MLDictionaryFeatureProvider(dictionary: [
+                "text": MLFeatureValue(multiArray: dEn),
+                "style": MLFeatureValue(multiArray: styleArray),
+                "mask": MLFeatureValue(multiArray: textMaskArray),
+            ])
+            
+            #if DEBUG
+            print("Duration Encoder text shape: \(dEn.shape), total elements: \(dEn.count)")
+            print("Duration Encoder style shape: \(styleArray.shape)")
+            print("Duration Encoder mask shape: \(textMaskArray.shape)")
+            #endif
+            
+            let durationOutput = try monitor.measure(PerformanceMonitor.Module.durationEncoder) {
+                do {
+                    #if DEBUG
+                    print("Calling Duration Encoder model...")
+                    #endif
+                    let output = try durationEncoder.prediction(from: durationInput)
+                    #if DEBUG
+                    print("Duration Encoder model completed successfully")
+                    #endif
+                    return output
+                } catch {
+                    print("Duration Encoder model failed: \(error)")
+                    throw error
+                }
+            }
+            guard let d = durationOutput.featureValue(for: "d")?.multiArrayValue else {
+                throw NSError(domain: "TTSModel", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to get duration predictor output"])
+            }
+            
+            // Prepare speed array (tensor of size (1,))
+            let speedArray = try MLMultiArray(shape: [1], dataType: .float32)
+            speedArray[[0]] = NSNumber(value: speed)
+            
+            let prosodyInput = try MLDictionaryFeatureProvider(dictionary: [
+                "d": MLFeatureValue(multiArray: d),
+                "speed": MLFeatureValue(multiArray: speedArray)
+            ])
+            
+            #if DEBUG
+            print("Prosody Predictor d shape: \(d.shape), total elements: \(d.count)")
+            print("Prosody Predictor speed shape: \(speedArray.shape), value: \(speed)")
+            #endif
+            
+            let prosodyOutput = try monitor.measure(PerformanceMonitor.Module.prosodyPredictor) {
+                do {
+                    #if DEBUG
+                    print("Calling Prosody Predictor model...")
+                    #endif
+                    let output = try prosodyPredictor.prediction(from: prosodyInput)
+                    #if DEBUG
+                    print("Prosody Predictor model completed successfully")
+                    #endif
+                    return output
+                } catch {
+                    print("Prosody Predictor model failed: \(error)")
+                    throw error
+                }
+            }
+            
+            guard let predDur = prosodyOutput.featureValue(for: "pred_dur")?.multiArrayValue else {
+                throw NSError(domain: "TTSModel", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to get prosody predictor output"])
+            }
+            
+            // Create alignment indices
+            let (_, alignmentMatrix, en) = try monitor.measure(PerformanceMonitor.Module.alignment) {
+                #if DEBUG
+                print("Creating alignment with predDur shape: \(predDur.shape), seqLen: \(seqLen)")
+                #endif
+                let indices = try createAlignmentIndices(predDur: predDur, seqLen: seqLen)
+                #if DEBUG
+                print("Alignment indices count: \(indices.count)")
+                #endif
+                let alignmentMatrix = try createAlignmentMatrix(indices: indices, seqLen: seqLen)
+                #if DEBUG
+                print("Alignment matrix shape: \(alignmentMatrix.shape), total elements: \(alignmentMatrix.count)")
+                #endif
+                let en = try applyAlignment(d: d, alignmentMatrix: alignmentMatrix)
+                #if DEBUG
+                print("Final alignment result shape: \(en.shape), total elements: \(en.count)")
+                #endif
+                return (indices, alignmentMatrix, en)
+            }
+            
+            // Call F0 Predictor
+            let f0Input = try MLDictionaryFeatureProvider(dictionary: [
+                "x": MLFeatureValue(multiArray: en),
+                "s": MLFeatureValue(multiArray: styleArray),
+            ])
+            
+            #if DEBUG
+            print("F0 Predictor x shape: \(en.shape), total elements: \(en.count)")
+            print("F0 Predictor s shape: \(styleArray.shape)")
+            #endif
+            
+            let f0Output = try monitor.measure(PerformanceMonitor.Module.f0Predictor) {
+                do {
+                    #if DEBUG
+                    print("Calling F0 Predictor model...")
+                    #endif
+                    let output = try f0Predictor.prediction(from: f0Input)
+                    #if DEBUG
+                    print("F0 Predictor model completed successfully")
+                    #endif
+                    return output
+                } catch {
+                    print("F0 Predictor model failed: \(error)")
+                    throw error
+                }
+            }
+            guard let f0Pred = f0Output.featureValue(for: "F0_pred")?.multiArrayValue,
+                  let nPred = f0Output.featureValue(for: "N_pred")?.multiArrayValue else {
+                throw NSError(domain: "TTSModel", code: 4, userInfo: [NSLocalizedDescriptionKey: "Failed to get F0 predictor output"])
+            }
+            
+            // ================================================================
+            // Apply pitch modifications to F0 curve
+            // ================================================================
+            let modifiedF0: MLMultiArray
+            if pitchShiftSemitones != 0.0 || pitchRangeScale != 1.0 {
+                modifiedF0 = try applyPitchModifications(
+                    f0: f0Pred,
+                    pitchShiftSemitones: pitchShiftSemitones,
+                    pitchRangeScale: pitchRangeScale
+                )
+                #if DEBUG
+                print("Applied pitch modifications: shift=\(pitchShiftSemitones), range=\(pitchRangeScale)")
+                #endif
+            } else {
+                modifiedF0 = f0Pred
+            }
+            
+            // Call Text Encoder
+            let textEncoderInput = try MLDictionaryFeatureProvider(dictionary: [
+                "x": MLFeatureValue(multiArray: inputIdsArray),
+                "m": MLFeatureValue(multiArray: textMaskArray),
+            ])
+            
+            #if DEBUG
+            print("Text Encoder x shape: \(inputIdsArray.shape), total elements: \(inputIdsArray.count)")
+            print("Text Encoder m shape: \(textMaskArray.shape)")
+            #endif
+            
+            let textEncoderOutput = try monitor.measure(PerformanceMonitor.Module.textEncoder) {
+                do {
+                    #if DEBUG
+                    print("Calling Text Encoder model...")
+                    #endif
+                    let output = try textEncoder.prediction(from: textEncoderInput)
+                    #if DEBUG
+                    print("Text Encoder model completed successfully")
+                    #endif
+                    return output
+                } catch {
+                    print("Text Encoder model failed: \(error)")
+                    throw error
+                }
+            }
+            guard let tEn = textEncoderOutput.featureValue(for: "t_en")?.multiArrayValue else {
+                throw NSError(domain: "TTSModel", code: 5, userInfo: [NSLocalizedDescriptionKey: "Failed to get text encoder output"])
+            }
+            
+            // Apply alignment to text encoder output
+            // In Python: asr = t_en @ pred_aln_trg (no transpose needed)
+            #if DEBUG
+            print("Applying direct alignment to text encoder output")
+            print("Text encoder output shape: \(tEn.shape), total elements: \(tEn.count)")
+            #endif
+            let asr = try applyAlignmentDirect(input: tEn, alignmentMatrix: alignmentMatrix)
+            #if DEBUG
+            print("ASR result shape: \(asr.shape), total elements: \(asr.count)")
+            #endif
+            
+            // Prepare reference audio array
+            let refAudioArray = try MLMultiArray(shape: [1, 128], dataType: .float32)
+            for i in 0..<128 {
+                refAudioArray[[0, i as NSNumber]] = NSNumber(value: refAudio[i])
+            }
+            
+            // Call Decoder with modified F0
+            let decoderInput = try MLDictionaryFeatureProvider(dictionary: [
+                "asr": MLFeatureValue(multiArray: asr),
+                "F0_curve": MLFeatureValue(multiArray: modifiedF0),
+                "N": MLFeatureValue(multiArray: nPred),
+                "s": MLFeatureValue(multiArray: refAudioArray)
+            ])
+            
+            #if DEBUG
+            print("Decoder asr shape: \(asr.shape), total elements: \(asr.count)")
+            print("Decoder F0_curve shape: \(modifiedF0.shape), total elements: \(modifiedF0.count)")
+            print("Decoder N shape: \(nPred.shape), total elements: \(nPred.count)")
+            print("Decoder s shape: \(refAudioArray.shape)")
+            #endif
+            
+            let decoderOutput = try monitor.measure(PerformanceMonitor.Module.decoder) {
+                do {
+                    #if DEBUG
+                    print("Calling Decoder model...")
+                    #endif
+                    let output = try decoder.prediction(from: decoderInput)
+                    #if DEBUG
+                    print("Decoder model completed successfully")
+                    #endif
+                    return output
+                } catch {
+                    print("Decoder model failed: \(error)")
+                    throw error
+                }
+            }
+            guard let x = decoderOutput.featureValue(for: "x")?.multiArrayValue,
+                  let _ = decoderOutput.featureValue(for: "s")?.multiArrayValue,
+                  let _ = decoderOutput.featureValue(for: "F0_curve")?.multiArrayValue else {
+                throw NSError(domain: "TTSModel", code: 6, userInfo: [NSLocalizedDescriptionKey: "Failed to get decoder output"])
+            }
+            
+            let s = refAudioArray
+            let F0_curve = modifiedF0
 
-        // Generate audio using the generator
-        print("🔍 Generator x shape: \(x.shape), total elements: \(x.count)")
-        print("🔍 Generator s shape: \(s.shape)")
-        print("🔍 Generator F0_curve shape: \(F0_curve.shape), total elements: \(F0_curve.count)")
-        
-        let audio = try monitor.measure(PerformanceMonitor.Module.generator) {
-            do {
-                print("▶️ Calling Generator...")
-                let output = try generator.generate(x: x, s: s, f0Curve: F0_curve)
-                print("✅ Generator completed successfully")
-                return output
-            } catch {
-                print("❌ Generator failed: \(error)")
-                throw error
+            // Generate audio using the generator
+            #if DEBUG
+            print("Generator x shape: \(x.shape), total elements: \(x.count)")
+            print("Generator s shape: \(s.shape)")
+            print("Generator F0_curve shape: \(F0_curve.shape), total elements: \(F0_curve.count)")
+            #endif
+            
+            let audio = try monitor.measure(PerformanceMonitor.Module.generator) {
+                do {
+                    #if DEBUG
+                    print("Calling Generator...")
+                    #endif
+                    let output = try generator.generate(x: x, s: s, f0Curve: F0_curve)
+                    #if DEBUG
+                    print("Generator completed successfully")
+                    #endif
+                    return output
+                } catch {
+                    print("Generator failed: \(error)")
+                    throw error
+                }
             }
-        }
-        
-        return audio
+            
+            return audio
         }
     }
+    
+    // MARK: - Pitch Modification
+    
+    /// Applies pitch shift and range scaling to F0 curve.
+    ///
+    /// Algorithm:
+    /// 1. Calculate mean F0 from voiced frames (f0 > 0)
+    /// 2. For each voiced frame:
+    ///    - deviation = f0 - mean
+    ///    - scaled = mean + (deviation * rangeScale)
+    ///    - shifted = scaled * 2^(semitones/12)
+    /// 3. Clamp to 50-500 Hz range
+    /// 4. Unvoiced frames (f0 == 0) remain zero
+    ///
+    /// - Parameters:
+    ///   - f0: Original F0 curve from F0 Predictor
+    ///   - pitchShiftSemitones: Semitones to shift (-12 to +12)
+    ///   - pitchRangeScale: Expressiveness multiplier (0.5 to 1.5)
+    /// - Returns: Modified F0 curve as MLMultiArray
+    private func applyPitchModifications(
+        f0: MLMultiArray,
+        pitchShiftSemitones: Float,
+        pitchRangeScale: Float
+    ) throws -> MLMultiArray {
+        let count = f0.count
+        
+        // Create output array with same shape
+        let modified = try MLMultiArray(shape: f0.shape, dataType: f0.dataType)
+        
+        // Get data pointers
+        let srcPointer = f0.dataPointer.bindMemory(to: Float32.self, capacity: count)
+        let dstPointer = modified.dataPointer.bindMemory(to: Float32.self, capacity: count)
+        
+        // Step 1: Calculate mean F0 from voiced frames
+        var sum: Float = 0.0
+        var voicedCount: Int = 0
+        
+        for i in 0..<count {
+            let value = srcPointer[i]
+            if value > 0 {
+                sum += value
+                voicedCount += 1
+            }
+        }
+        
+        // Edge case: no voiced frames
+        guard voicedCount > 0 else {
+            // Copy unchanged
+            memcpy(dstPointer, srcPointer, count * MemoryLayout<Float32>.size)
+            return modified
+        }
+        
+        let meanF0 = sum / Float(voicedCount)
+        
+        // Step 2: Calculate pitch multiplier from semitones
+        // frequency_ratio = 2^(semitones/12)
+        let pitchMultiplier = powf(2.0, pitchShiftSemitones / 12.0)
+        
+        // Step 3: Apply modifications to each frame
+        for i in 0..<count {
+            let original = srcPointer[i]
+            
+            if original > 0 {
+                // Voiced frame: apply range scaling and pitch shift
+                let deviation = original - meanF0
+                let scaledDeviation = deviation * pitchRangeScale
+                let rangeScaled = meanF0 + scaledDeviation
+                let shifted = rangeScaled * pitchMultiplier
+                
+                // Clamp to reasonable range (50-500 Hz)
+                let clamped = max(50.0, min(500.0, shifted))
+                dstPointer[i] = clamped
+            } else {
+                // Unvoiced frame: keep as zero
+                dstPointer[i] = 0.0
+            }
+        }
+        
+        return modified
+    }
+    
+    // MARK: - Style Vector Processing
     
     private func splitStyleVector(_ refS: [Float]) -> (refAudio: [Float], style: [Float]) {
         // ref_s[:, :128] - first 128 elements for reference audio
@@ -339,6 +510,8 @@ public class TTSModel {
         let style = Array(refS.suffix(128))
         return (refAudio, style)
     }
+    
+    // MARK: - Alignment
     
     private func createAlignmentIndices(predDur: MLMultiArray, seqLen: Int) throws -> [Int] {
         // Convert pred_dur to integer durations
@@ -462,13 +635,15 @@ public class TTSModel {
         return result
     }
     
+    // MARK: - Tensor Operations
+    
     /// Optimized transpose using vDSP
     private func transposeLastTwoDimensions(_ array: MLMultiArray) throws -> MLMultiArray {
         let batch = array.shape[0].intValue
         let dim1 = array.shape[1].intValue
         let dim2 = array.shape[2].intValue
         
-        let transposed = try MLMultiArray(shape: [NSNumber(value: batch), NSNumber(value: dim2), NSNumber(value: dim1)], 
+        let transposed = try MLMultiArray(shape: [NSNumber(value: batch), NSNumber(value: dim2), NSNumber(value: dim1)],
                                          dataType: array.dataType)
         
         let sourcePointer = array.dataPointer.bindMemory(to: Float32.self, capacity: array.count)
