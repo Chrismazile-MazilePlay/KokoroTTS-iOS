@@ -257,24 +257,28 @@ public class TTSPipeline {
         set { PerformanceMonitor.shared.isEnabled = newValue }
     }
     
-    public init(modelPath: URL, vocabURL: URL, postaggerModelURL: URL, language: Language, espeakDataPath: String? = nil, configuration: MLModelConfiguration = MLModelConfiguration()) throws {
+    public init(modelPath: URL, vocabURL: URL, postaggerModelURL: URL, language: Language, espeakDataPath: String? = nil, g2p: G2P? = nil, configuration: MLModelConfiguration = MLModelConfiguration()) throws {
         self.modelPath = modelPath
         self.vocabURL = vocabURL
         self.postaggerModelURL = postaggerModelURL
         self.language = language
         self.model = try TTSModel(modelPath: modelPath, configuration: configuration)
-        
-        switch language {
-        case .englishUS:
-            self.g2p = try G2PEn(british: false, vocabURL: vocabURL, postaggerModelURL: postaggerModelURL, espeakDataPath: espeakDataPath)
-        case .englishGB:
-            self.g2p = try G2PEn(british: true, vocabURL: vocabURL, postaggerModelURL: postaggerModelURL, espeakDataPath: espeakDataPath)
-        case .french, .spanish, .italian, .portuguese, .hindi:
-            self.g2p = try G2PSimple(language: language, espeakDataPath: espeakDataPath)
-        case .japanese:
-            self.g2p = G2PJa()
-        case .chinese:
-            self.g2p = G2PZh()
+
+        if let externalG2P = g2p {
+            self.g2p = externalG2P
+        } else {
+            switch language {
+            case .englishUS:
+                self.g2p = try G2PEn(british: false, vocabURL: vocabURL, postaggerModelURL: postaggerModelURL, espeakDataPath: espeakDataPath)
+            case .englishGB:
+                self.g2p = try G2PEn(british: true, vocabURL: vocabURL, postaggerModelURL: postaggerModelURL, espeakDataPath: espeakDataPath)
+            case .french, .spanish, .italian, .portuguese, .hindi:
+                self.g2p = try G2PSimple(language: language, espeakDataPath: espeakDataPath)
+            case .japanese:
+                self.g2p = G2PJa()
+            case .chinese:
+                self.g2p = G2PZh()
+            }
         }
         try loadVocabulary()
     }
