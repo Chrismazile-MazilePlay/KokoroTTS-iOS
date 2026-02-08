@@ -257,7 +257,7 @@ public class TTSPipeline {
         set { PerformanceMonitor.shared.isEnabled = newValue }
     }
     
-    public init(modelPath: URL, vocabURL: URL, postaggerModelURL: URL, language: Language, espeakDataPath: String? = nil, g2p: G2P? = nil, configuration: MLModelConfiguration = MLModelConfiguration()) throws {
+    public init(modelPath: URL, vocabURL: URL, postaggerModelURL: URL, language: Language, g2p: G2P? = nil, configuration: MLModelConfiguration = MLModelConfiguration()) throws {
         self.modelPath = modelPath
         self.vocabURL = vocabURL
         self.postaggerModelURL = postaggerModelURL
@@ -269,15 +269,15 @@ public class TTSPipeline {
         } else {
             switch language {
             case .englishUS:
-                self.g2p = try G2PEn(british: false, vocabURL: vocabURL, postaggerModelURL: postaggerModelURL, espeakDataPath: espeakDataPath)
+                self.g2p = try G2PEn(british: false, vocabURL: vocabURL, postaggerModelURL: postaggerModelURL)
             case .englishGB:
-                self.g2p = try G2PEn(british: true, vocabURL: vocabURL, postaggerModelURL: postaggerModelURL, espeakDataPath: espeakDataPath)
-            case .french, .spanish, .italian, .portuguese, .hindi:
-                self.g2p = try G2PSimple(language: language, espeakDataPath: espeakDataPath)
+                self.g2p = try G2PEn(british: true, vocabURL: vocabURL, postaggerModelURL: postaggerModelURL)
             case .japanese:
                 self.g2p = G2PJa()
             case .chinese:
                 self.g2p = G2PZh()
+            case .french, .spanish, .italian, .portuguese, .hindi:
+                throw TTSError.invalidInput("Language \(language.rawValue) requires an external G2P implementation. Pass a G2P instance via the g2p parameter.")
             }
         }
         try loadVocabulary()
